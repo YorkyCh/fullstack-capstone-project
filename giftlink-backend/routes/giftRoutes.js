@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const connectToDatabase = require("../models/db"); // Adjust the path as necessary
+const connectToDatabase = require("../models/db"); 
 
 // GET all gifts
 router.get("/", async (req, res) => {
