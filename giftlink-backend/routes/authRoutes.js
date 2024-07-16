@@ -1,79 +1,101 @@
 const express = require("express");
 const bcryptjs = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { body, validationResult } = require("express-validator");
 const connectToDatabase = require("../models/db");
 const router = express.Router();
 const dotenv = require("dotenv");
-const pino = require("pino"); // Import Pino logger
+const pino = require("pino"); 
+dotenv.config();
 
-// Step 1 - Task 3: Create a Pino logger instance
-const logger = pino();
+const logger = pino(); 
 
-// Step 1 - Task 4: Create JWT secret
+//Create JWT secret
 dotenv.config();
 const JWT_SECRET = process.env.JWT_SECRET;
 
-router.post(
-  "/register",
-  [
-    // Validate input
-    body("firstName").notEmpty().withMessage("First name is required"),
-    body("lastName").notEmpty().withMessage("Last name is required"),
-    body("email").isEmail().withMessage("Invalid email address"),
-    body("password")
-      .isLength({ min: 6 })
-      .withMessage("Password must be at least 6 characters long"),
-  ],
-  async (req, res) => {
-    // Handle validation errors
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+router.post("/register", async (req, res) => {
+  try {
+    //Connect to `giftsdb`
+    const db = await connectToDatabase();
+
+    //Access the `users` 
+    const collection = db.collection("users");
+
+    //Check for existing email in DB
+    const existingEmail = await collection.findOne({ email: req.body.email });
+
+    if (existingEmail) {
+      logger.error("Email id already exists");
+      return res.status(400).json({ error: "Email id already exists" });
     }
 
-    const { firstName, lastName, email, password } = req.body;
+    const salt = await bcryptjs.genSalt(10);
+    const hash = await bcryptjs.hash(req.body.password, salt);
+    const email = req.body.email;
 
-    try {
-      // Connect to the database
-      const db = await connectToDatabase();
-      const usersCollection = db.collection("users");
+    //Save user details
+    const newUser = await collection.insertOne({
+      email: req.body.email,
+      firstName: req.body.firstName,
+      lastName: req.body.lastName,
+      password: hash,
+      createdAt: new Date(),
+    });
 
-      // Check if the user already exists
-      const existingUser = await usersCollection.findOne({ email });
-      if (existingUser) {
-        return res.status(400).json({ message: "User already exists" });
+    const payload = {
+      user: {
+        id: newUser.insertedId,
+      },
+    };
+
+    //Create JWT
+    const authtoken = jwt.sign(payload, JWT_SECRET);
+    logger.info("User registered successfully");
+    res.json({ authtoken, email });
+  } catch (e) {
+    logger.error(e);
+    return res.status(500).send("Internal server error");
+  }
+});
+
+//Login Endpoint
+router.post("/login", async (req, res) => {
+  console.log("\n\n Inside login");
+
+  try {
+    // const collection = await connectToDatabase();
+    const db = await connectToDatabase();
+    const collection = db.collection("users");
+    const theUser = await collection.findOne({ email: req.body.email });
+
+    if (theUser) {
+      let result = await bcryptjs.compare(req.body.password, theUser.password);
+      if (!result) {
+        logger.error("Passwords do not match");
+        return res.status(404).json({ error: "Wrong pasword" });
       }
-
-      // Hash the password
-      const hashedPassword = await bcryptjs.hash(password, 10);
-
-      // Create the user object
-      const newUser = {
-        firstName,
-        lastName,
-        email,
-        password: hashedPassword,
-        createdAt: new Date(),
+      let payload = {
+        user: {
+          id: theUser._id.toString(),
+        },
       };
 
-      // Insert the new user into the database
-      const result = await usersCollection.insertOne(newUser);
+      const userName = theUser.firstName;
+      const userEmail = theUser.email;
 
-      // Generate JWT token
-      const token = jwt.sign(
-        { userId: result.insertedId, email: newUser.email },
-        JWT_SECRET,
-        { expiresIn: "1h" }
-      );
-
-      // Respond with the token
-      res.status(201).json({ token });
-    } catch (error) {
-      logger.error("Error registering user:", error);
-      res.status(500).json({ message: "Internal server error" });
+      const authtoken = jwt.sign(payload, JWT_SECRET);
+      logger.info("User logged in successfully");
+      return res.status(200).json({ authtoken, userName, userEmail });
+    } else {
+      logger.error("User not found");
+      return res.status(404).json({ error: "User not found" });
     }
+  } catch (e) {
+    logger.error(e);
+    return res
+      .status(500)
+      .json({ error: "Internal server error", details: e.message });
   }
-);
+});
 
 module.exports = router;
